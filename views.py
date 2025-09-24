@@ -31,19 +31,29 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework import status
 from registration.serializers import *
 from django.db import transaction
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.throttling import AnonRateThrottle
+
+import base64
+import json
+from rest_framework.response import Response
+from rest_framework import viewsets
+
+
+from dotenv import load_dotenv
 import os
+from Crypto.Cipher import AES
+import base64
+import json
+load_dotenv()
+key_b64 = os.getenv("AES_KEY")
+iv_b64  = os.getenv("AES_IV")
+if not key_b64 or not iv_b64:
+    raise Exception("AES_KEY or AES_IV not found")
+AES_KEY = base64.b64decode(key_b64)
+AES_IV  = base64.b64decode(iv_b64)
+
 # function for validate email
 # this function is used to call whether the email is already exist or not
 # checking the validate email
-
-
-
-
-class CustomThrottle(AnonRateThrottle):
-    rate = '20/day'
-
 def ValidateEmail(request):
     if request.method == 'POST':
         email = request.POST.get('email')
@@ -59,7 +69,6 @@ def ValidateEmail(request):
                 messages.error(request, 'Please correct the error.')
     else:
         email = user(request.user)
-
 
 
 
@@ -110,9 +119,7 @@ def forgotpassword(request, email):
         user_obj.save()
 
         msg = " An email is sent"
-        schema = os.environ.get("SCHEMA")
-        host = os.environ.get("HOST")
-        link_with_code = f"{schema}://{host}/registration/User/{user_obj.username}/ValidateForgotPassword/{pass_code}/"
+        link_with_code = f"{request.scheme}://{request.get_host()}/registration/User/{user_obj.username}/ValidateForgotPassword/{pass_code}/"
 
         send_forgot_password_link(user_obj.username, link_with_code)
     return Response({"msg": msg})
@@ -137,6 +144,7 @@ def create_hashed_password(password):
     #     ("Invalid credentials", "warning")      
 
 class RequestCallView(APIView):
+    authentication_classes = [TokenAuthentication]
 
     def post(self,request):
         serializer = RequestCallSerializer(data=request.data)
@@ -148,22 +156,28 @@ class RequestCallView(APIView):
 class UserViewset(viewsets.ModelViewSet):
     queryset = user.objects.all()
     serializer_class = UsersSerializer
-    throttle_classes = [CustomThrottle]
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        user_data = request.data
+        raw_data = request.data
+        if isinstance(raw_data, str):
+            try:
+                user_data = decrypt_payload(raw_data)
+            except Exception as e:
+                return Response({"message": "Invalid payload", "error": str(e)}, status=400)
+        else:
+            user_data = raw_data
         print("@@@@@@@", user_data)
         n_data = None
         try:
-            user.objects.select_for_update().get(email=user_data["email"])
+            user.objects.get(email=user_data["email"])
             print("##########", user)
             msg = "Email is already exist"
             print("KKKKKKK", msg)
             return Response({"message":msg},status=status.HTTP_403_FORBIDDEN)
         except user.DoesNotExist:
             try:
-                user.objects.select_for_update().get(mobile_no=user_data["mobile_no"])
+                user.objects.get(mobile_no=user_data["mobile_no"])
                 print("##########", user)
                 msg = "Mobile no is already exist"
                 print("KKKKKKK", msg)
@@ -193,22 +207,32 @@ class UserViewset(viewsets.ModelViewSet):
                 create_user.save()
                 token,created  = Token.objects.get_or_create(user=create_user)
                 create_user.sub_users.add(create_user)
-                schema = os.environ.get('SCHEMA')
-                host = os.environ.get('HOST')
-                activation_link = f"{schema}://{host}/registration/activateuser/{create_user.activation_code}"
+
+                activation_link = f"{request.scheme}://{request.get_host()}/registration/activateuser/{create_user.activation_code}"
                 Activation_Email.send_activation_email(create_user.name, create_user.email, activation_link)
                 print(create_user.email)
                 msg = "Congratulation!! Your registration is Successful! Activation link has been sent on your email. Please activate your account."
             
                 serializer = UsersSerializer(create_user)
                 n_data = serializer.data
+                # 14 days time peroid for login 
 
+                # return Response(HTTP_200_OK)
         return Response({"msg": msg, "data": n_data})
 
+        # after the successfull insert please use the send email function
 
 
+# def sendActivationEmail():
+#    # activation_link=f"https://products.coderize.in:9003/users/activateuser/{UserViewset.activation_code}"
+#    # Activation_Email.send_activation_email(UserViewset.name, UserViewset.email, activation_link)
+#     activation_link=f"https://products.coderize.in:9003/users/activateuser/{UserViewset.activation_code}"
+#     Activation_Email.send_activation_email(UserViewset.name, UserViewset.email, activation_link)
 
-
+# def sendActivationEmail():
+#     activation_link = "https://www.auto-counts.com/users/activateuser"
+#     Activation_Email.send_email(
+#         UserViewset.user1, UserViewset.user_email, activation_link, UserViewset.activation_code)
 
 
 @api_view(['GET'])
@@ -228,84 +252,123 @@ def activateuser(request, act_code):
     return render(request, "activate_user_response.html", context={"message": message})
 
 
+def decrypt_payload(payload_b64):
+    # 1. Base64 decode
+    print("called")
+    encrypted_bytes = base64.b64decode(payload_b64)
+
+    # 2. AES decrypt
+    cipher = AES.new(AES_KEY, AES.MODE_CBC, AES_IV)
+    decrypted = cipher.decrypt(encrypted_bytes)
+
+    # 3. Remove PKCS7 padding
+    pad_len = decrypted[-1]
+    decrypted = decrypted[:-pad_len]
+
+    # 4. Convert bytes to dict
+    return json.loads(decrypted.decode("utf-8"))
+
 # post for sign in
 # token=Token
 # used viewset for get method is not allowed
 class signinViewset(viewsets.ViewSet):
-    authentication_classes = []
-    throttle_classes = [CustomThrottle]
-
-    def get_token(self, user):
-        refresh = RefreshToken.for_user(user)
-        return {
-            'refresh': str(refresh),
-            'access': str(refresh.access_token),
-
-        }
-
 
     def create(self, request):
-        user_data = request.data
+        raw_data  = request.data
+        print("RAW:", raw_data, type(raw_data))
+        if isinstance(raw_data, str):
+            try:
+                user_data = decrypt_payload(raw_data)  # decrypt AES payload
+            except Exception as e:
+                return Response({"message": "Invalid payload", "error": str(e)}, status=400)
+        else:
+            user_data = raw_data
 
+        print("PARSED user_data:", user_data)
+        print("API IS HEATING")
+        print(f"user_data type: {type(user_data)}")
+        print(f"user_data content: {user_data}")
         response_data = {"message": "",
                          #'Token': None,
                          "user_id": None,
                          "data":None}
-
+        print(user_data)
         try:
             # Get a user by its email
             response_data['message'] = "Please check your password."
             Record = user.objects.get(email=user_data["email"])
         except user.DoesNotExist :
-
+            # print(e)
+            # Return response if user doesn't exists
             response_data['message'] = "User doesn't exists."
         else:
             # If user is found, check if it is activated
             if Record.is_activated is False:
-
                 # If not activated, send this message
                 response_data[
                     'message'] = "Oops! It seems The UserID is not yet activated. Please check the activation link that has been sent on your email!"
             else:
                 # If activated, compare its password to see if it is a valid password
+                print("REACHED HERE")
                 input_password = user_data['password']
+
                 password_in_db = Record.password
+
                 # Check both plane and encrypted password
                 if input_password == password_in_db or bcrypt.checkpw(input_password.encode('UTF-8'),
                                                                       password_in_db.encode('UTF-8')):
-                    # current_date = datetime.now(timezone.utc)#.strptime()).replace(".", "-")
-                    # registration_date=Record.registration_date #.strptime("2026/11/24 09:30", "%Y/%m/%d %H:%M")
-                    # Enddate =timedelta(days=14)
-                    # if Record.is_activate is True and current_date-registration_date > Enddate :
-                    #     Record.is_activate=False
-                    #
-                    #     response_data['message']='Your account has expired'
-                    #     return Response(response_data)
+                    
+                    
+                    current_date = datetime.now(timezone.utc)#.strptime()).replace(".", "-")
+                    print("CURRENT DATE IS",current_date)
+
+                    registration_date=Record.registration_date #.strptime("2026/11/24 09:30", "%Y/%m/%d %H:%M")
+                    
+                    print("REGISTRATION  DATE EQUAL TO ",registration_date)
+                    Enddate =timedelta(days=14)
+                    
+                    print(" END DATE EQUAL TO ",Enddate)
+                    print("DIFFERENTS BEETWEEN TWO DAYS",current_date-registration_date)
+                    print("RECORD TRUE OR FALSE",Record.is_activate)
+                    if Record.is_activate is True and current_date-registration_date > Enddate :  
+                        
+                        print("THIS CONDITION IS NOT SATISFIED")
+                        print(" REGISTRATION DATE EQUAL TO ",registration_date)
+                        print(" END DATE EQUAL TO ",Enddate)
+                        Record.is_activate=False
+                        print(" RECORD.IS_ACTIVATED STATUUS",Record.is_activate)
+                        Record.save()
+                        response_data['message']='Your account has expired'
+                        return Response(response_data)
+                            
+                    
+               
+                      
+                    # If password is valid, then send login successful response
                     response_data['message'] = "Login Successful"
                     response_data['data'] = user_data["email"]
+                    print()
                     example=UserLimitedSerializer()
                     example.user=Record.id
-                    # token, _ = Token.objects.get_or_create(user=Record)
-                    refresh = self.get_token(Record)
-                    response_data['token'] = refresh['access']
-                    response_data['refresh'] = refresh['refresh']
+                            # global token
+                    token, _ = Token.objects.get_or_create(user=Record)
+                    response_data['token'] = str(token.key)
                     response_data['user_id'] = example.user
                     response_data['access'] = None
                     response_data['role'] = Record.role
                     try:
-                        print(Record.id,"************")
-                        obj = UserAccessDb.objects.get(user_id=Record.id)
-                        response_data['access'] = UserAccessSerializer(obj).data
-                    except Exception as e:
-                        print(e)
+                        response_data['access'] = UserAccessSerializer(Record.user_access.all()[0]).data
+                    except:
                         pass
-
                 else:
-
-                    response_data['message'] = "Please check your password."
+                        # If password is not valid, then send this response
+                            response_data['message'] = "Please check your password."
+                
+                
 
         return Response(response_data)
 
+    
 
 # Get user
 global msg
@@ -343,6 +406,8 @@ def signin(self, useremail, password):
 class userList(generics.ListAPIView):
     queryset = user.objects.all()
     serializer_class = UsersSerializer
+    authentication_classes=[TokenAuthentication]
+    permission_classes=[IsAuthenticated]
 
 # user update by id
 @api_view(['PUT'])
@@ -357,6 +422,7 @@ def userupdate(request, pk):
 
      
 class Logout(APIView):
+    authentication_classes = [TokenAuthentication]
 
     def post(self, request):
         django_logout(request)
@@ -384,6 +450,8 @@ def get_all_permissions(request, obj=None):
 class permissionsViewset(viewsets.ModelViewSet):
     queryset = Permission.objects.all()
     serializer_class = PermissionsSerializer
+    authentication_classes=[TokenAuthentication]
+    permission_classes=[IsAuthenticated]
     def create(self, request, *args, **kwargs):
         permissions_data = request.data
 
@@ -414,6 +482,8 @@ def get_all_groups(request, obj=None):
 class GroupViewset(viewsets.ModelViewSet):
     queryset = Group.objects.all()
     serializer_class = GroupSerializer
+    authentication_classes=[TokenAuthentication]
+    permission_classes=[IsAuthenticated]
     def create(self, request, *args, **kwargs):
         groups_data = request.data
 
@@ -436,6 +506,8 @@ class GroupViewset(viewsets.ModelViewSet):
 class RoleViewset(viewsets.ModelViewSet):
     queryset = Role.objects.all()
     serializer_class = RoleSerializer
+    authentication_classes=[TokenAuthentication]
+    permission_classes=[IsAuthenticated]
     def create(self, request, *args, **kwargs):
         role_data = request.data
 
@@ -452,6 +524,8 @@ class RoleViewset(viewsets.ModelViewSet):
 class User1Viewset(viewsets.ModelViewSet):
     queryset = user.objects.all()
     serializer_class = UsersSerializer
+    authentication_classes=[TokenAuthentication]
+    permission_classes=[IsAuthenticated]
     def create(self, request, *args, **kwargs):
         user_data = request.data
 
@@ -486,6 +560,8 @@ class User1Viewset(viewsets.ModelViewSet):
 class Company_UsersViewset(viewsets.ModelViewSet):
     queryset = Company_Users.objects.all()
     serializer_class = Company_UsersSeializer
+    authentication_classes=[TokenAuthentication]
+    permission_classes=[IsAuthenticated]
     def create(self, request, *args, **kwargs):
         companyuser_data = request.data
 
@@ -507,38 +583,26 @@ def getcompanyusersbyuser_id(request, id):
 
 
 class VerifyView(APIView):
+    authentication_classes=[TokenAuthentication]
+    permission_classes=[IsAuthenticated]
 
     def get(self,request):
         access = None
-        role = None
         try:
-            role = request.user.role
+            access = UserAccessSerializer(request.user.user_access.all()[0]).data
         except:
             pass
-        try:
-            obj = UserAccessDb.objects.get(user_id=request.user.id)
-            access = UserAccessSerializer(obj).data
-            print(access,"////////",request.user.id)
-        except Exception as e:
-            print(e)
-            pass
-        if access is not None:
-            return Response({"access":access,"role":role},status=status.HTTP_200_OK)
-        return Response({"access": access, "role": role}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"access":access,"role":request.user.role},status=status.HTTP_200_OK)
 
 
 
 
 
 class PlanView(APIView):
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def get(self,request):
-        try:
-            plans = Plan.objects.get(price__gt=0, user=request.user)
-            serializer = PlanSerializer(plans)
-            return Response([serializer.data], status=200)
-        except Exception as e:
-            print(e)
         plans = Plan.objects.filter(price__gt=0,user__isnull=True)
         serializer = PlanSerializer(plans,many=True)
         return Response(serializer.data,status=200)
