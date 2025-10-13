@@ -46,43 +46,43 @@ class CompanySerializer(serializers.ModelSerializer):
         # Call the parent's __init__ method with the remaining kwargs
         super(CompanySerializer, self).__init__(*args, **kwargs)
     
-    # def to_representation(self,instance):
-    #     ret = super().to_representation(instance)
-    #     obj = instance.subscribe_companies.all()[0]
-    #     ret['paid'] = obj.get_plan_subscribe()
-    #     ret['features'] = FeatureSerializer(Feature.objects.get(user_id=instance.user.id)).data
-    #     ret['plan_name'] = obj.plan.name
-    #     ret['end_date'] = obj.end_date
-    #     ret['branches'] = []
-    #     user = instance.user
-    #     if self.user:
-    #         access = self.user.user_access.all()[0]
-    #         if access:
-    #             branches = access.branches.filter(company_id=instance.company_id)
-    #             print([each.branch_id for each in branches])
-    #             branches = branches.order_by('created_date')
-    #             ret['branches'] = BranchSerializer(branches, many=True).data
-    #     elif user:
-    #         access = user.user_access.all()[0]
-    #         if access:
-    #             branches = access.branches.order_by('created_date')
-    #             ret['branches'] = BranchSerializer(branches,many=True).data
-    #     return ret
-    
-    def to_representation(self, instance):
-        
+    def to_representation(self,instance):
         ret = super().to_representation(instance)
         obj = instance.subscribe_companies.all()[0]
         ret['paid'] = obj.get_plan_subscribe()
         ret['features'] = FeatureSerializer(Feature.objects.get(user_id=instance.user.id)).data
         ret['plan_name'] = obj.plan.name
         ret['end_date'] = obj.end_date
-
-        # Always return company branches
-        branches = instance.company_branches.order_by('created_date')
-        ret['branches'] = BranchSerializer(branches, many=True).data
-
+        ret['branches'] = []
+        user = instance.user
+        if self.user:
+            access = self.user.user_access.all()[0]
+            if access:
+                branches = access.branches.filter(company_id=instance.company_id)
+                print([each.branch_id for each in branches])
+                branches = branches.order_by('created_date')
+                ret['branches'] = BranchSerializer(branches, many=True).data
+        elif user:
+            access = user.user_access.all()[0]
+            if access:
+                branches = access.branches.order_by('created_date')
+                ret['branches'] = BranchSerializer(branches,many=True).data
         return ret
+    
+    # def to_representation(self, instance):
+        
+    #     ret = super().to_representation(instance)
+    #     obj = instance.subscribe_companies.all()[0]
+    #     ret['paid'] = obj.get_plan_subscribe()
+    #     ret['features'] = FeatureSerializer(Feature.objects.get(user_id=instance.user.id)).data
+    #     ret['plan_name'] = obj.plan.name
+    #     ret['end_date'] = obj.end_date
+
+    #     # Always return company branches
+    #     branches = instance.company_branches.order_by('created_date')
+    #     ret['branches'] = BranchSerializer(branches, many=True).data
+
+    #     return ret
 class CompanySerializerUpdate(serializers.ModelSerializer):
     def __init__(self, *args, **kwargs):
         # Extract and remove the custom argument from kwargs
